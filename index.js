@@ -1,7 +1,7 @@
 const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 
-const TOKEN = "8796146859:AAEXNEvKwSdmi9ta0GLxc8FY9VJF4FiggX0";
+const TOKEN = "8796146859:AAEp1sIk9RD4r3KVqYBxvhF5Momj1Uj1sXw";
 const OWNER_ID = 8721643962;
 
 const bot = new TelegramBot(TOKEN, { polling: true });
@@ -10,7 +10,8 @@ let sessions = {};
 let users = new Set();
 let approvedUsers = new Set();
 
-// START MENU
+
+// ================= START =================
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
     const name = msg.from.first_name || "User";
@@ -38,16 +39,14 @@ bot.onText(/\/start/, (msg) => {
     bot.sendMessage(chatId, `
 🚀 *GitPushBot | GitHub Manager*
 ━━━━━━━━━━━━━━━━━━━━━━
+Hello *${name}*! 👋
 
-Hello, *${name}*! 👋  
-Choose an option below 👇
-
-⚡ Bot made by *DIE*
+Select option below 👇
 `, {
         parse_mode: "Markdown",
         reply_markup: {
             inline_keyboard: [
-                [{ text: "🔑 Login (Send Token)", callback_data: "login_info" }],
+                [{ text: "🔑 Login", callback_data: "login_info" }],
                 [{ text: "📁 My Repos", callback_data: "my_repos" }],
                 [{ text: "🔍 Search Repo", callback_data: "search_repo" }],
                 [{ text: "➕ Create Repo", callback_data: "create_repo" }],
@@ -57,7 +56,8 @@ Choose an option below 👇
     });
 });
 
-// USERS PANEL
+
+// ================= USERS PANEL =================
 bot.onText(/\/users/, (msg) => {
     if (msg.chat.id !== OWNER_ID) return;
 
@@ -71,7 +71,8 @@ bot.onText(/\/users/, (msg) => {
     });
 });
 
-// MESSAGE HANDLER
+
+// ================= MESSAGE =================
 bot.on("message", async (msg) => {
     if (!msg.text || msg.text.startsWith("/")) return;
 
@@ -80,7 +81,7 @@ bot.on("message", async (msg) => {
 
     sessions[chatId] = sessions[chatId] || {};
 
-    // SEARCH MODE
+    // SEARCH
     if (sessions[chatId].searchMode) {
         const keyword = msg.text.toLowerCase();
 
@@ -93,21 +94,19 @@ bot.on("message", async (msg) => {
                 r.name.toLowerCase().includes(keyword)
             );
 
-            if (filtered.length === 0) {
-                bot.sendMessage(chatId, "❌ No repo found");
-            } else {
-                let buttons = filtered.map(r => ([{
-                    text: "📁 " + r.name,
-                    callback_data: "repo_" + encodeURIComponent(r.name)
-                }]));
+            if (!filtered.length) return bot.sendMessage(chatId, "❌ Not found");
 
-                bot.sendMessage(chatId, "🔍 Results:", {
-                    reply_markup: { inline_keyboard: buttons }
-                });
-            }
+            let buttons = filtered.map(r => ([{
+                text: "📁 " + r.name,
+                callback_data: "repo_" + encodeURIComponent(r.name)
+            }]));
+
+            bot.sendMessage(chatId, "🔍 Results:", {
+                reply_markup: { inline_keyboard: buttons }
+            });
 
         } catch {
-            bot.sendMessage(chatId, "❌ Search failed");
+            bot.sendMessage(chatId, "❌ Search error");
         }
 
         sessions[chatId].searchMode = false;
@@ -116,16 +115,14 @@ bot.on("message", async (msg) => {
 
     // CREATE REPO
     if (sessions[chatId].createRepoMode) {
-        const repoName = msg.text;
-
         try {
             await axios.post(
                 "https://api.github.com/user/repos",
-                { name: repoName, private: false, auto_init: true },
+                { name: msg.text, private: false, auto_init: true },
                 { headers: { Authorization: `Bearer ${sessions[chatId].token}` } }
             );
 
-            bot.sendMessage(chatId, `✅ Repo created: ${repoName}`);
+            bot.sendMessage(chatId, "✅ Repo created");
         } catch {
             bot.sendMessage(chatId, "❌ Create failed");
         }
@@ -136,23 +133,21 @@ bot.on("message", async (msg) => {
 
     // DELETE FILE
     if (sessions[chatId].deleteMode) {
-        const fileName = msg.text;
-
         try {
             const fileData = await axios.get(
-                `https://api.github.com/repos/${sessions[chatId].username}/${sessions[chatId].repo}/contents/${fileName}`,
+                `https://api.github.com/repos/${sessions[chatId].username}/${sessions[chatId].repo}/contents/${msg.text}`,
                 { headers: { Authorization: `Bearer ${sessions[chatId].token}` } }
             );
 
             await axios.delete(
-                `https://api.github.com/repos/${sessions[chatId].username}/${sessions[chatId].repo}/contents/${fileName}`,
+                `https://api.github.com/repos/${sessions[chatId].username}/${sessions[chatId].repo}/contents/${msg.text}`,
                 {
                     headers: { Authorization: `Bearer ${sessions[chatId].token}` },
                     data: { message: "Deleted", sha: fileData.data.sha }
                 }
             );
 
-            bot.sendMessage(chatId, `✅ Deleted: ${fileName}`);
+            bot.sendMessage(chatId, "✅ Deleted");
         } catch {
             bot.sendMessage(chatId, "❌ Delete failed");
         }
@@ -161,7 +156,7 @@ bot.on("message", async (msg) => {
         return;
     }
 
-    // LOGIN (TOKEN)
+    // LOGIN
     try {
         const user = await axios.get("https://api.github.com/user", {
             headers: { Authorization: `Bearer ${msg.text}` }
@@ -173,25 +168,28 @@ bot.on("message", async (msg) => {
             repo: null
         };
 
-        bot.sendMessage(chatId, "✅ Login successful! Now use 'My Repos'");
+        bot.sendMessage(chatId, "✅ Login success");
     } catch {
         bot.sendMessage(chatId, "❌ Invalid Token");
     }
 });
 
-// CALLBACK
+
+// ================= CALLBACK =================
 bot.on("callback_query", async (q) => {
     const chatId = q.message.chat.id;
     const data = q.data;
+
+    if (!sessions[chatId]) sessions[chatId] = {};
 
     // APPROVE
     if (data.startsWith("approve_")) {
         const id = parseInt(data.replace("approve_", ""));
         approvedUsers.add(id);
-        bot.sendMessage(id, "✅ Approved! Use /start");
+        bot.sendMessage(id, "✅ Approved, use /start");
     }
 
-    // REMOVE USER
+    // REMOVE
     if (data.startsWith("remove_")) {
         const id = parseInt(data.replace("remove_", ""));
         approvedUsers.delete(id);
@@ -201,16 +199,13 @@ bot.on("callback_query", async (q) => {
 
     // LOGIN INFO
     if (data === "login_info") {
-        return bot.sendMessage(chatId, "🔑 Send GitHub PAT to login");
+        return bot.sendMessage(chatId, "Send GitHub PAT");
     }
 
     // MY REPOS
     if (data === "my_repos") {
         const s = sessions[chatId];
-
-        if (!s || !s.token) {
-            return bot.sendMessage(chatId, "❌ पहले login करो");
-        }
+        if (!s.token) return bot.sendMessage(chatId, "Login first");
 
         try {
             const repos = await axios.get("https://api.github.com/user/repos", {
@@ -222,30 +217,33 @@ bot.on("callback_query", async (q) => {
                 callback_data: "repo_" + encodeURIComponent(r.name)
             }]));
 
-            buttons.push([{ text: "🔍 Search Repo", callback_data: "search_repo" }]);
-            buttons.push([{ text: "➕ Create Repo", callback_data: "create_repo" }]);
-
-            bot.sendMessage(chatId, "📂 Your Repos:", {
+            bot.sendMessage(chatId, "📂 Repos:", {
                 reply_markup: { inline_keyboard: buttons }
             });
 
         } catch {
-            bot.sendMessage(chatId, "❌ Failed to load repos");
+            bot.sendMessage(chatId, "❌ Repo load error");
         }
     }
 
     // SEARCH BUTTON
     if (data === "search_repo") {
         sessions[chatId].searchMode = true;
-        bot.sendMessage(chatId, "🔍 Send repo name:");
+        return bot.sendMessage(chatId, "Send repo name");
     }
 
-    // SELECT REPO
+    // CREATE BUTTON
+    if (data === "create_repo") {
+        sessions[chatId].createRepoMode = true;
+        return bot.sendMessage(chatId, "Send repo name");
+    }
+
+    // REPO SELECT (FIXED)
     if (data.startsWith("repo_")) {
         const repo = decodeURIComponent(data.replace("repo_", ""));
         sessions[chatId].repo = repo;
 
-        bot.sendMessage(chatId, `📁 Repo: ${repo}`, {
+        return bot.sendMessage(chatId, `✅ Repo: ${repo}`, {
             reply_markup: {
                 inline_keyboard: [
                     [{ text: "📤 Upload", callback_data: "upload" }],
@@ -255,36 +253,32 @@ bot.on("callback_query", async (q) => {
         });
     }
 
-    if (data === "create_repo") {
-        sessions[chatId].createRepoMode = true;
-        bot.sendMessage(chatId, "📦 Send repo name:");
+    if (data === "upload") {
+        return bot.sendMessage(chatId, "Send file");
     }
 
     if (data === "delete") {
         sessions[chatId].deleteMode = true;
-        bot.sendMessage(chatId, "🗑 Send file name:");
-    }
-
-    if (data === "upload") {
-        bot.sendMessage(chatId, "📤 Send file");
+        return bot.sendMessage(chatId, "Send file name");
     }
 
     if (data === "how") {
         bot.sendMessage(chatId, `
 📖 How To Use
 
-1. Send token  
-2. Click My Repos  
-3. Upload/Delete  
+1. Login (send token)
+2. Click My Repos
+3. Select repo
+4. Upload/Delete
 
-⚡ Bot made by DIE
 `);
     }
 
     bot.answerCallbackQuery(q.id);
 });
 
-// UPLOAD
+
+// ================= UPLOAD =================
 bot.on("document", async (msg) => {
     const chatId = msg.chat.id;
     if (!approvedUsers.has(chatId)) return;
@@ -306,13 +300,13 @@ bot.on("document", async (msg) => {
         );
 
         bot.sendMessage(chatId, "✅ Uploaded");
-
     } catch {
         bot.sendMessage(chatId, "❌ Upload failed");
     }
 });
 
-// LOGOUT
+
+// ================= LOGOUT =================
 bot.onText(/\/logout/, (msg) => {
     delete sessions[msg.chat.id];
     bot.sendMessage(msg.chat.id, "🔒 Logged out");
