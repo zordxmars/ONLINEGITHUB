@@ -3,7 +3,7 @@ const axios = require("axios");
 const fs = require("fs");
 
 // ===== CONFIG =====
-const TOKEN = "8686861247:AAHW0kTvgw8we8Aq2Fi6i-z6lLUvwA4pW3Y";
+const TOKEN = "8796146859:AAEN_7C-hrMwUrbepwJHgviSJ2BFRecJQyQ";
 const OWNER_ID = 8721643962;
 const OPENAI_KEY = process.env.OPENAI_KEY;
 
@@ -46,7 +46,7 @@ bot.onText(/\/start/, (msg) => {
 
 // ===== MENU =====
 function menu(id) {
-    bot.sendMessage(id, "🚀 GitHub Manager PRO", {
+    bot.sendMessage(id, "🚀 DIE GITHUB MANGER PRO", {
         reply_markup: {
             inline_keyboard: [
                 [{ text: "📁 My Repos", callback_data: "repos" }],
