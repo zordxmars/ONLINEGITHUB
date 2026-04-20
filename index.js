@@ -3,13 +3,19 @@ const axios = require("axios");
 const fs = require("fs");
 
 // ===== CONFIG =====
-const TOKEN = "8686861247:AAE8EfHF6uw6oDqnlXahL7KyMoIaIzYz-OE";
+const TOKEN = "8686861247:AAHW0kTvgw8we8Aq2Fi6i-z6lLUvwA4pW3Y";
 const OWNER_ID = 8721643962;
 const OPENAI_KEY = process.env.OPENAI_KEY;
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-// ===== DB =====
+console.log("✅ Bot Started");
+
+// ===== ERROR PROTECTION =====
+process.on("uncaughtException", err => console.log("ERROR:", err));
+process.on("unhandledRejection", err => console.log("REJECTION:", err));
+
+// ===== DATABASE =====
 let db = { users: [] };
 try {
     db = JSON.parse(fs.readFileSync("database.json"));
@@ -20,6 +26,10 @@ const saveDB = () => fs.writeFileSync("database.json", JSON.stringify(db, null, 
 
 // ===== SESSION =====
 let sessions = {};
+const getSession = (id) => {
+    if (!sessions[id]) sessions[id] = {};
+    return sessions[id];
+};
 
 // ===== START =====
 bot.onText(/\/start/, (msg) => {
@@ -42,18 +52,19 @@ function menu(id) {
                 [{ text: "📁 My Repos", callback_data: "repos" }],
                 [{ text: "➕ Create Repo", callback_data: "create_repo" }],
                 [{ text: "🔍 Search Repo", callback_data: "search_repo" }],
-                [{ text: "🤖 AI Help", callback_data: "ai_help" }]
+                [{ text: "🤖 AI Fix", callback_data: "ai" }]
             ]
         }
     });
 }
 
-// ===== ADMIN =====
+// ===== STATS =====
 bot.onText(/\/stats/, (msg) => {
     if (msg.chat.id !== OWNER_ID) return;
     bot.sendMessage(msg.chat.id, `👥 Users: ${db.users.length}`);
 });
 
+// ===== BROADCAST =====
 bot.onText(/\/broadcast (.+)/, (msg, m) => {
     if (msg.chat.id !== OWNER_ID) return;
 
@@ -61,7 +72,7 @@ bot.onText(/\/broadcast (.+)/, (msg, m) => {
         bot.sendMessage(id, m[1]).catch(() => {});
     });
 
-    bot.sendMessage(msg.chat.id, "✅ Done");
+    bot.sendMessage(msg.chat.id, "✅ Broadcast done");
 });
 
 // ===== CALLBACK =====
@@ -69,94 +80,103 @@ bot.on("callback_query", async (q) => {
     const id = q.message.chat.id;
     const data = q.data;
 
-    sessions[id] = sessions[id] || {};
-    let s = sessions[id];
+    const s = getSession(id);
 
-    // ===== REPOS =====
-    if (data === "repos") {
-        if (!s.token) return bot.sendMessage(id, "🔑 Send GitHub token first");
+    try {
 
-        const res = await axios.get("https://api.github.com/user/repos", {
-            headers: { Authorization: `Bearer ${s.token}` }
-        });
+        // ===== LOGIN CHECK =====
+        if (!s.token && data !== "login") {
+            return bot.sendMessage(id, "🔑 Send GitHub token first");
+        }
 
-        let btn = res.data.map(r => ([{
-            text: r.name,
-            callback_data: "repo_" + encodeURIComponent(r.name)
-        }]));
+        // ===== REPOS =====
+        if (data === "repos") {
+            const res = await axios.get("https://api.github.com/user/repos", {
+                headers: { Authorization: `Bearer ${s.token}` }
+            });
 
-        return bot.sendMessage(id, "📂 Repos:", {
-            reply_markup: { inline_keyboard: btn }
-        });
-    }
+            let btn = res.data.map(r => ([{
+                text: r.name,
+                callback_data: "repo_" + encodeURIComponent(r.name)
+            }]));
 
-    // ===== SEARCH =====
-    if (data === "search_repo") {
-        s.search = true;
-        return bot.sendMessage(id, "🔍 Send repo name to search");
-    }
+            return bot.sendMessage(id, "📂 Repos:", {
+                reply_markup: { inline_keyboard: btn }
+            });
+        }
 
-    // ===== AI =====
-    if (data === "ai_help") {
-        s.ai = true;
-        return bot.sendMessage(id, "🤖 Send code to analyze");
-    }
+        // ===== CREATE =====
+        if (data === "create_repo") {
+            s.create = true;
+            return bot.sendMessage(id, "Send repo name");
+        }
 
-    // ===== CREATE =====
-    if (data === "create_repo") {
-        s.create = true;
-        return bot.sendMessage(id, "📦 Send repo name");
-    }
+        // ===== SEARCH =====
+        if (data === "search_repo") {
+            s.search = true;
+            return bot.sendMessage(id, "Send repo name");
+        }
 
-    // ===== SELECT REPO =====
-    if (data.startsWith("repo_")) {
-        s.repo = decodeURIComponent(data.split("_")[1]);
+        // ===== AI =====
+        if (data === "ai") {
+            s.ai = true;
+            return bot.sendMessage(id, "Send code to fix");
+        }
 
-        const res = await axios.get(
-            `https://api.github.com/repos/${s.repo}/contents`,
-            { headers: { Authorization: `Bearer ${s.token}` } }
-        );
+        // ===== SELECT REPO =====
+        if (data.startsWith("repo_")) {
+            s.repo = decodeURIComponent(data.split("_")[1]);
 
-        let files = res.data.map(f => ([{
-            text: f.name,
-            callback_data: "file_" + encodeURIComponent(f.path)
-        }]));
+            const res = await axios.get(
+                `https://api.github.com/repos/${s.username}/${s.repo}/contents`,
+                { headers: { Authorization: `Bearer ${s.token}` } }
+            );
 
-        files.push([{ text: "📦 Download ZIP", callback_data: "zip" }]);
+            let files = res.data.map(f => ([{
+                text: f.name,
+                callback_data: "file_" + encodeURIComponent(f.path)
+            }]));
 
-        bot.sendMessage(id, "📂 Files:", {
-            reply_markup: { inline_keyboard: files }
-        });
-    }
+            files.push([{ text: "📦 ZIP", callback_data: "zip" }]);
 
-    // ===== ZIP =====
-    if (data === "zip") {
-        return bot.sendMessage(id,
-            `https://github.com/${sessions[id].repo}/archive/refs/heads/main.zip`
-        );
-    }
+            return bot.sendMessage(id, "📂 Files:", {
+                reply_markup: { inline_keyboard: files }
+            });
+        }
 
-    // ===== FILE =====
-    if (data.startsWith("file_")) {
-        s.file = decodeURIComponent(data.split("_")[1]);
+        // ===== ZIP =====
+        if (data === "zip") {
+            return bot.sendMessage(id,
+                `https://github.com/${s.username}/${s.repo}/archive/refs/heads/main.zip`
+            );
+        }
 
-        const res = await axios.get(
-            `https://api.github.com/repos/${s.repo}/contents/${s.file}`,
-            { headers: { Authorization: `Bearer ${s.token}` } }
-        );
+        // ===== FILE =====
+        if (data.startsWith("file_")) {
+            s.file = decodeURIComponent(data.split("_")[1]);
 
-        const content = Buffer.from(res.data.content, "base64").toString();
+            const res = await axios.get(
+                `https://api.github.com/repos/${s.username}/${s.repo}/contents/${s.file}`,
+                { headers: { Authorization: `Bearer ${s.token}` } }
+            );
 
-        bot.sendMessage(id, content.slice(0, 1500));
+            const content = Buffer.from(res.data.content, "base64").toString();
 
-        bot.sendMessage(id, "⚙️", {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: "✏️ Edit", callback_data: "edit" }],
-                    [{ text: "🗑 Delete", callback_data: "delete" }]
-                ]
-            }
-        });
+            bot.sendMessage(id, content.slice(0, 1500));
+
+            return bot.sendMessage(id, "⚙️", {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "✏️ Edit", callback_data: "edit" }],
+                        [{ text: "🗑 Delete", callback_data: "delete" }]
+                    ]
+                }
+            });
+        }
+
+    } catch (err) {
+        console.log(err);
+        bot.sendMessage(id, "❌ Error, try again");
     }
 
     bot.answerCallbackQuery(q.id);
@@ -169,12 +189,12 @@ bot.on("message", async (msg) => {
 
     if (!text || text.startsWith("/")) return;
 
-    sessions[id] = sessions[id] || {};
-    let s = sessions[id];
+    const s = getSession(id);
 
-    // LOGIN
-    if (!s.token) {
-        try {
+    try {
+
+        // ===== LOGIN =====
+        if (!s.token) {
             const user = await axios.get("https://api.github.com/user", {
                 headers: { Authorization: `Bearer ${text}` }
             });
@@ -183,52 +203,60 @@ bot.on("message", async (msg) => {
             s.username = user.data.login;
 
             return bot.sendMessage(id, "✅ Logged in");
-        } catch {
-            return bot.sendMessage(id, "❌ Invalid token");
         }
-    }
 
-    // SEARCH
-    if (s.search) {
-        const res = await axios.get(
-            `https://api.github.com/search/repositories?q=${text}`
-        );
+        // ===== CREATE =====
+        if (s.create) {
+            await axios.post(
+                "https://api.github.com/user/repos",
+                { name: text },
+                { headers: { Authorization: `Bearer ${s.token}` } }
+            );
 
-        let result = res.data.items.slice(0, 5).map(r =>
-            `${r.full_name}`
-        ).join("\n");
+            bot.sendMessage(id, "✅ Repo created");
+            s.create = false;
+            return;
+        }
 
-        bot.sendMessage(id, result);
-        s.search = false;
-    }
+        // ===== SEARCH =====
+        if (s.search) {
+            const res = await axios.get(
+                `https://api.github.com/search/repositories?q=${text}`
+            );
 
-    // AI ANALYZE
-    if (s.ai) {
-        const res = await axios.post("https://api.openai.com/v1/chat/completions", {
-            model: "gpt-4o-mini",
-            messages: [{
-                role: "user",
-                content: `Fix and analyze this code:\n${text}`
-            }]
-        }, {
-            headers: {
-                Authorization: `Bearer ${OPENAI_KEY}`
-            }
-        });
+            let result = res.data.items.slice(0, 5)
+                .map(r => r.full_name).join("\n");
 
-        bot.sendMessage(id, res.data.choices[0].message.content);
-        s.ai = false;
-    }
+            bot.sendMessage(id, result);
+            s.search = false;
+            return;
+        }
 
-    // CREATE
-    if (s.create) {
-        await axios.post(
-            "https://api.github.com/user/repos",
-            { name: text },
-            { headers: { Authorization: `Bearer ${s.token}` } }
-        );
+        // ===== AI =====
+        if (s.ai) {
+            const res = await axios.post(
+                "https://api.openai.com/v1/chat/completions",
+                {
+                    model: "gpt-4o-mini",
+                    messages: [{
+                        role: "user",
+                        content: `Fix this code:\n${text}`
+                    }]
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${OPENAI_KEY}`
+                    }
+                }
+            );
 
-        bot.sendMessage(id, "✅ Repo Created");
-        s.create = false;
+            bot.sendMessage(id, res.data.choices[0].message.content);
+            s.ai = false;
+            return;
+        }
+
+    } catch (err) {
+        console.log(err);
+        bot.sendMessage(id, "❌ Error occurred");
     }
 });
