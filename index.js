@@ -2,34 +2,21 @@ const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 const fs = require("fs");
 
-// ===== DEBUG =====
-process.on("uncaughtException", console.error);
-process.on("unhandledRejection", console.error);
-
 // ===== CONFIG =====
-const TOKEN = process.env.TOKEN || "8686861247:AAGhRo-Zglg7uNznNoAweKKPtBbkGF4Jegs";
-const OWNER_ID = parseInt(process.env.OWNER_ID || "8721643962");
-
-if (!TOKEN) {
-    console.log("❌ TOKEN missing");
-    process.exit(1);
-}
+const TOKEN = "8686861247:AAE8EfHF6uw6oDqnlXahL7KyMoIaIzYz-OE";
+const OWNER_ID = 8721643962;
+const OPENAI_KEY = process.env.OPENAI_KEY;
 
 const bot = new TelegramBot(TOKEN, { polling: true });
-console.log("✅ Bot Started");
 
-// ===== DATABASE =====
-let db = { users: [], approved: [], tokens: {} };
-
+// ===== DB =====
+let db = { users: [] };
 try {
     db = JSON.parse(fs.readFileSync("database.json"));
 } catch {
     fs.writeFileSync("database.json", JSON.stringify(db, null, 2));
 }
-
-const saveDB = () => {
-    fs.writeFileSync("database.json", JSON.stringify(db, null, 2));
-};
+const saveDB = () => fs.writeFileSync("database.json", JSON.stringify(db, null, 2));
 
 // ===== SESSION =====
 let sessions = {};
@@ -41,63 +28,40 @@ bot.onText(/\/start/, (msg) => {
     if (!db.users.includes(id)) {
         db.users.push(id);
         saveDB();
+        bot.sendMessage(OWNER_ID, `👤 New User: ${id}`);
     }
 
-    // auto approve owner
-    if (id === OWNER_ID && !db.approved.includes(id)) {
-        db.approved.push(id);
-        saveDB();
-    }
+    menu(id);
+});
 
-    if (!db.approved.includes(id)) {
-        return bot.sendMessage(id, "⛔ Access Denied (Ask Admin)");
-    }
-
-    bot.sendMessage(id, "🚀 Bot Ready", {
+// ===== MENU =====
+function menu(id) {
+    bot.sendMessage(id, "🚀 GitHub Manager PRO", {
         reply_markup: {
             inline_keyboard: [
-                [{ text: "🔑 Login", callback_data: "login" }],
-                [{ text: "📁 My Repos", callback_data: "repos" }]
+                [{ text: "📁 My Repos", callback_data: "repos" }],
+                [{ text: "➕ Create Repo", callback_data: "create_repo" }],
+                [{ text: "🔍 Search Repo", callback_data: "search_repo" }],
+                [{ text: "🤖 AI Help", callback_data: "ai_help" }]
             ]
         }
     });
+}
+
+// ===== ADMIN =====
+bot.onText(/\/stats/, (msg) => {
+    if (msg.chat.id !== OWNER_ID) return;
+    bot.sendMessage(msg.chat.id, `👥 Users: ${db.users.length}`);
 });
 
-// ===== LOGIN =====
-bot.on("message", async (msg) => {
-    if (!msg.text || msg.text.startsWith("/")) return;
+bot.onText(/\/broadcast (.+)/, (msg, m) => {
+    if (msg.chat.id !== OWNER_ID) return;
 
-    const id = msg.chat.id;
-    if (!db.approved.includes(id)) return;
+    db.users.forEach(id => {
+        bot.sendMessage(id, m[1]).catch(() => {});
+    });
 
-    let s = sessions[id] || {};
-
-    // restore session
-    if (!sessions[id] && db.tokens[id]) {
-        sessions[id] = db.tokens[id];
-        s = sessions[id];
-    }
-
-    // login
-    if (!s.token) {
-        try {
-            const user = await axios.get("https://api.github.com/user", {
-                headers: { Authorization: `Bearer ${msg.text}` }
-            });
-
-            sessions[id] = {
-                token: msg.text,
-                username: user.data.login
-            };
-
-            db.tokens[id] = sessions[id];
-            saveDB();
-
-            return bot.sendMessage(id, "✅ Login Success");
-        } catch {
-            return bot.sendMessage(id, "❌ Invalid Token");
-        }
-    }
+    bot.sendMessage(msg.chat.id, "✅ Done");
 });
 
 // ===== CALLBACK =====
@@ -105,88 +69,166 @@ bot.on("callback_query", async (q) => {
     const id = q.message.chat.id;
     const data = q.data;
 
+    sessions[id] = sessions[id] || {};
     let s = sessions[id];
-
-    if (!s && db.tokens[id]) {
-        sessions[id] = db.tokens[id];
-        s = sessions[id];
-    }
-
-    if (!s?.token && data !== "login") {
-        return bot.sendMessage(id, "🔑 Login first");
-    }
-
-    // ===== LOGIN BUTTON =====
-    if (data === "login") {
-        return bot.sendMessage(id, "Send your GitHub Token");
-    }
 
     // ===== REPOS =====
     if (data === "repos") {
-        try {
-            const res = await axios.get("https://api.github.com/user/repos", {
-                headers: { Authorization: `Bearer ${s.token}` }
-            });
+        if (!s.token) return bot.sendMessage(id, "🔑 Send GitHub token first");
 
-            let btn = res.data.map(r => ([{
-                text: r.name,
-                callback_data: "repo_" + encodeURIComponent(r.name)
-            }]));
+        const res = await axios.get("https://api.github.com/user/repos", {
+            headers: { Authorization: `Bearer ${s.token}` }
+        });
 
-            return bot.sendMessage(id, "📂 Repos:", {
-                reply_markup: { inline_keyboard: btn }
-            });
-        } catch (e) {
-            return bot.sendMessage(id, "❌ Repo fetch error");
-        }
+        let btn = res.data.map(r => ([{
+            text: r.name,
+            callback_data: "repo_" + encodeURIComponent(r.name)
+        }]));
+
+        return bot.sendMessage(id, "📂 Repos:", {
+            reply_markup: { inline_keyboard: btn }
+        });
+    }
+
+    // ===== SEARCH =====
+    if (data === "search_repo") {
+        s.search = true;
+        return bot.sendMessage(id, "🔍 Send repo name to search");
+    }
+
+    // ===== AI =====
+    if (data === "ai_help") {
+        s.ai = true;
+        return bot.sendMessage(id, "🤖 Send code to analyze");
+    }
+
+    // ===== CREATE =====
+    if (data === "create_repo") {
+        s.create = true;
+        return bot.sendMessage(id, "📦 Send repo name");
     }
 
     // ===== SELECT REPO =====
     if (data.startsWith("repo_")) {
-        s.repo = decodeURIComponent(data.replace("repo_", ""));
+        s.repo = decodeURIComponent(data.split("_")[1]);
 
-        try {
-            const res = await axios.get(
-                `https://api.github.com/repos/${s.username}/${s.repo}/contents`,
-                { headers: { Authorization: `Bearer ${s.token}` } }
-            );
+        const res = await axios.get(
+            `https://api.github.com/repos/${s.repo}/contents`,
+            { headers: { Authorization: `Bearer ${s.token}` } }
+        );
 
-            let files = res.data.map(f => ([{
-                text: f.name,
-                callback_data: "file_" + encodeURIComponent(f.path)
-            }]));
+        let files = res.data.map(f => ([{
+            text: f.name,
+            callback_data: "file_" + encodeURIComponent(f.path)
+        }]));
 
-            return bot.sendMessage(id, "📂 Files:", {
-                reply_markup: { inline_keyboard: files }
-            });
+        files.push([{ text: "📦 Download ZIP", callback_data: "zip" }]);
 
-        } catch {
-            return bot.sendMessage(id, "❌ File load error");
-        }
+        bot.sendMessage(id, "📂 Files:", {
+            reply_markup: { inline_keyboard: files }
+        });
+    }
+
+    // ===== ZIP =====
+    if (data === "zip") {
+        return bot.sendMessage(id,
+            `https://github.com/${sessions[id].repo}/archive/refs/heads/main.zip`
+        );
     }
 
     // ===== FILE =====
     if (data.startsWith("file_")) {
-        s.file = decodeURIComponent(data.replace("file_", ""));
+        s.file = decodeURIComponent(data.split("_")[1]);
 
-        try {
-            const res = await axios.get(
-                `https://api.github.com/repos/${s.username}/${s.repo}/contents/${s.file}`,
-                { headers: { Authorization: `Bearer ${s.token}` } }
-            );
+        const res = await axios.get(
+            `https://api.github.com/repos/${s.repo}/contents/${s.file}`,
+            { headers: { Authorization: `Bearer ${s.token}` } }
+        );
 
-            const content = Buffer.from(res.data.content, "base64").toString();
+        const content = Buffer.from(res.data.content, "base64").toString();
 
-            return bot.sendMessage(id,
-`📄 ${s.file}
+        bot.sendMessage(id, content.slice(0, 1500));
 
-${content.slice(0, 1000)}`
-            );
-
-        } catch {
-            return bot.sendMessage(id, "❌ File read error");
-        }
+        bot.sendMessage(id, "⚙️", {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "✏️ Edit", callback_data: "edit" }],
+                    [{ text: "🗑 Delete", callback_data: "delete" }]
+                ]
+            }
+        });
     }
 
     bot.answerCallbackQuery(q.id);
+});
+
+// ===== MESSAGE =====
+bot.on("message", async (msg) => {
+    const id = msg.chat.id;
+    const text = msg.text;
+
+    if (!text || text.startsWith("/")) return;
+
+    sessions[id] = sessions[id] || {};
+    let s = sessions[id];
+
+    // LOGIN
+    if (!s.token) {
+        try {
+            const user = await axios.get("https://api.github.com/user", {
+                headers: { Authorization: `Bearer ${text}` }
+            });
+
+            s.token = text;
+            s.username = user.data.login;
+
+            return bot.sendMessage(id, "✅ Logged in");
+        } catch {
+            return bot.sendMessage(id, "❌ Invalid token");
+        }
+    }
+
+    // SEARCH
+    if (s.search) {
+        const res = await axios.get(
+            `https://api.github.com/search/repositories?q=${text}`
+        );
+
+        let result = res.data.items.slice(0, 5).map(r =>
+            `${r.full_name}`
+        ).join("\n");
+
+        bot.sendMessage(id, result);
+        s.search = false;
+    }
+
+    // AI ANALYZE
+    if (s.ai) {
+        const res = await axios.post("https://api.openai.com/v1/chat/completions", {
+            model: "gpt-4o-mini",
+            messages: [{
+                role: "user",
+                content: `Fix and analyze this code:\n${text}`
+            }]
+        }, {
+            headers: {
+                Authorization: `Bearer ${OPENAI_KEY}`
+            }
+        });
+
+        bot.sendMessage(id, res.data.choices[0].message.content);
+        s.ai = false;
+    }
+
+    // CREATE
+    if (s.create) {
+        await axios.post(
+            "https://api.github.com/user/repos",
+            { name: text },
+            { headers: { Authorization: `Bearer ${s.token}` } }
+        );
+
+        bot.sendMessage(id, "✅ Repo Created");
+        s.create = false;
+    }
 });
