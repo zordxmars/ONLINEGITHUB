@@ -2,14 +2,14 @@ const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 const fs = require("fs");
 
-const TOKEN = "8796146859:AAEAJa6OQyM5UAXM8_ZWfz1823cIhRBw9I0";
+const TOKEN = "8796146859:AAFsaQNdcDHd5Qn7QSlNmX1S33LdArSj0fo";
 const OWNER_ID = 8721643962;
 const OPENAI_KEY = process.env.OPENAI_KEY;
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
 // ===== DATABASE =====
-let db = { users: [], approved: [] };
+let db = { users: [], approved: [], tokens: {} };
 try {
     db = JSON.parse(fs.readFileSync("database.json"));
 } catch {
@@ -19,26 +19,6 @@ const saveDB = () => fs.writeFileSync("database.json", JSON.stringify(db, null, 
 
 // ===== MEMORY =====
 let sessions = {};
-
-// ===== AI FUNCTION =====
-async function askAI(prompt) {
-    try {
-        const res = await axios.post("https://api.openai.com/v1/chat/completions", {
-            model: "gpt-4o-mini",
-            messages: [{ role: "user", content: prompt }]
-        }, {
-            headers: {
-                "Authorization": `Bearer ${OPENAI_KEY}`,
-                "Content-Type": "application/json"
-            }
-        });
-
-        return res.data.choices[0].message.content;
-    } catch (err) {
-        console.log(err.response?.data || err.message);
-        return "❌ AI Error";
-    }
-}
 
 // ===== START =====
 bot.onText(/\/start/, (msg) => {
@@ -67,7 +47,7 @@ bot.onText(/\/start/, (msg) => {
 
 // ===== MENU =====
 function menu(chatId) {
-    bot.sendMessage(chatId, "🚀 *GitHub Manager + AI*", {
+    bot.sendMessage(chatId, "🚀 *GitHub Manager*", {
         parse_mode: "Markdown",
         reply_markup: {
             inline_keyboard: [
@@ -87,9 +67,14 @@ bot.on("message", async (msg) => {
     const chatId = msg.chat.id;
     if (!db.approved.includes(chatId)) return;
 
+    // ✅ AUTO LOGIN FIX
+    if (!sessions[chatId] && db.tokens[chatId]) {
+        sessions[chatId] = db.tokens[chatId];
+    }
+
     let s = sessions[chatId] || {};
 
-    // LOGIN
+    // ===== LOGIN =====
     if (!s.token) {
         try {
             const user = await axios.get("https://api.github.com/user", {
@@ -101,28 +86,20 @@ bot.on("message", async (msg) => {
                 username: user.data.login
             };
 
+            // ✅ SAVE TOKEN (FIX)
+            db.tokens[chatId] = {
+                token: msg.text,
+                username: user.data.login
+            };
+            saveDB();
+
             return bot.sendMessage(chatId, "✅ Logged in\nUse buttons");
         } catch {
             return bot.sendMessage(chatId, "❌ Invalid Token");
         }
     }
 
-    // CREATE REPO
-    if (s.createRepoStep === "name") {
-        s.repoName = msg.text;
-        s.createRepoStep = "visibility";
-
-        return bot.sendMessage(chatId, "🔒 Select visibility:", {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: "🌐 Public", callback_data: "repo_public" }],
-                    [{ text: "🔐 Private", callback_data: "repo_private" }]
-                ]
-            }
-        });
-    }
-
-    // EDIT FILE
+    // ===== EDIT FILE =====
     if (s.editMode) {
         try {
             const fileData = await axios.get(
@@ -155,10 +132,54 @@ bot.on("callback_query", async (q) => {
     const chatId = q.message.chat.id;
     const data = q.data;
 
-    let s = sessions[chatId];
-    if (!s) return bot.sendMessage(chatId, "Login first");
+    // ===== APPROVE =====
+    if (data.startsWith("approve_")) {
+        const id = parseInt(data.split("_")[1]);
+        if (!db.approved.includes(id)) {
+            db.approved.push(id);
+            saveDB();
+        }
+        bot.sendMessage(id, "✅ Approved");
+        return;
+    }
 
-    // REPOS
+    // ===== REJECT =====
+    if (data.startsWith("reject_")) {
+        const id = parseInt(data.split("_")[1]);
+        bot.sendMessage(id, "❌ Rejected");
+        return;
+    }
+
+    // ✅ AUTO LOGIN FIX (CALLBACK)
+    if (!sessions[chatId] && db.tokens[chatId]) {
+        sessions[chatId] = db.tokens[chatId];
+    }
+
+    let s = sessions[chatId];
+
+    if (!s?.token) {
+        return bot.sendMessage(chatId, "🔑 Please login first");
+    }
+
+    // ===== HELP =====
+    if (data === "help") {
+        return bot.sendMessage(chatId,
+`📖 HOW TO USE
+
+1. Login → send GitHub token
+2. My Repos → select repo
+3. Click file → manage
+4. Upload → send file
+
+AI:
+🤖 Analyze code
+
+Admin:
+/broadcast msg
+/stats`);
+    }
+
+    // ===== REPOS =====
     if (data === "repos") {
         const res = await axios.get("https://api.github.com/user/repos", {
             headers: { Authorization: `Bearer ${s.token}` }
@@ -174,7 +195,7 @@ bot.on("callback_query", async (q) => {
         });
     }
 
-    // SELECT REPO
+    // ===== SELECT REPO =====
     if (data.startsWith("repo_")) {
         s.repo = decodeURIComponent(data.split("_")[1]);
 
@@ -188,12 +209,14 @@ bot.on("callback_query", async (q) => {
             callback_data: "file_" + encodeURIComponent(f.path)
         }]));
 
+        buttons.push([{ text: "📤 Upload File", callback_data: "upload" }]);
+
         bot.sendMessage(chatId, "📂 Files:", {
             reply_markup: { inline_keyboard: buttons }
         });
     }
 
-    // FILE
+    // ===== FILE =====
     if (data.startsWith("file_")) {
         const path = decodeURIComponent(data.split("_")[1]);
         s.file = path;
@@ -216,75 +239,59 @@ ${content.slice(0, 1500)}`);
                     [{ text: "✏️ Edit", callback_data: "edit" }],
                     [{ text: "⬇️ Download", callback_data: "download" }],
                     [{ text: "🗑 Delete", callback_data: "delete" }],
-                    [{ text: "📤 Upload", callback_data: "upload" }],
-                    [{ text: "🤖 Explain", callback_data: "ai_explain" }],
-                    [{ text: "🛠 Fix Code", callback_data: "ai_fix" }],
-                    [{ text: "⚡ Improve", callback_data: "ai_improve" }]
+                    [{ text: "🤖 Analyze", callback_data: "ai" }]
                 ]
             }
         });
     }
 
-    // UPLOAD BUTTON
+    // ===== UPLOAD BUTTON =====
     if (data === "upload") {
+        s.uploadMode = true;
         return bot.sendMessage(chatId, "📤 Send file to upload");
     }
 
-    // AI FEATURES
-    if (data.startsWith("ai_")) {
-        const res = await axios.get(
-            `https://api.github.com/repos/${s.username}/${s.repo}/contents/${s.file}`,
-            { headers: { Authorization: `Bearer ${s.token}` } }
-        );
-
-        const code = Buffer.from(res.data.content, "base64").toString();
-
-        let prompt = "";
-        if (data === "ai_explain") prompt = "Explain this code:\n" + code;
-        if (data === "ai_fix") prompt = "Fix bugs in this code:\n" + code;
-        if (data === "ai_improve") prompt = "Improve and optimize this code:\n" + code;
-
-        const ai = await askAI(prompt);
-        return bot.sendMessage(chatId, ai);
-    }
-
-    // DOWNLOAD
-    if (data === "download") {
-        const url = `https://raw.githubusercontent.com/${s.username}/${s.repo}/main/${s.file}`;
-        return bot.sendMessage(chatId, url);
-    }
-
-    // DELETE
-    if (data === "delete") {
+    // ===== AI ANALYZE =====
+    if (data === "ai") {
         try {
             const fileData = await axios.get(
                 `https://api.github.com/repos/${s.username}/${s.repo}/contents/${s.file}`,
                 { headers: { Authorization: `Bearer ${s.token}` } }
             );
 
-            await axios.delete(
-                `https://api.github.com/repos/${s.username}/${s.repo}/contents/${s.file}`,
+            const content = Buffer.from(fileData.data.content, "base64").toString();
+
+            const ai = await axios.post(
+                "https://api.openai.com/v1/chat/completions",
                 {
-                    headers: { Authorization: `Bearer ${s.token}` },
-                    data: { message: "delete", sha: fileData.data.sha }
+                    model: "gpt-4o-mini",
+                    messages: [{ role: "user", content: "Analyze this code:\n" + content }]
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${OPENAI_KEY}`
+                    }
                 }
             );
 
-            bot.sendMessage(chatId, "✅ Deleted");
+            bot.sendMessage(chatId, ai.data.choices[0].message.content);
+
         } catch {
-            bot.sendMessage(chatId, "❌ Delete failed");
+            bot.sendMessage(chatId, "❌ AI failed");
         }
     }
 
     bot.answerCallbackQuery(q.id);
 });
 
-// ===== FILE UPLOAD =====
+// ===== UPLOAD =====
 bot.on("document", async (msg) => {
     const chatId = msg.chat.id;
-    const s = sessions[chatId];
 
-    if (!s || !s.repo) return bot.sendMessage(chatId, "Select repo first");
+    if (!db.approved.includes(chatId)) return;
+
+    let s = sessions[chatId];
+    if (!s || !s.uploadMode) return;
 
     try {
         const link = await bot.getFileLink(msg.document.file_id);
@@ -304,4 +311,6 @@ bot.on("document", async (msg) => {
     } catch {
         bot.sendMessage(chatId, "❌ Upload failed");
     }
+
+    s.uploadMode = false;
 });
