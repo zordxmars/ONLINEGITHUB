@@ -2,7 +2,7 @@ const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 const fs = require("fs");
 
-const TOKEN = "8796146859:AAF4RC8XuKZ0tXGigz7uzuQyzZgvn2x5SKk";
+const TOKEN = "8686861247:AAEEeKnEwcYpqAgM57qpnnO4BbV6bffI28o";
 const OWNER_ID = 8721643962;
 const OPENAI_KEY = process.env.OPENAI_KEY;
 
