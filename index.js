@@ -2,7 +2,7 @@ const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 const fs = require("fs");
 
-const TOKEN = "8796146859:AAFsaQNdcDHd5Qn7QSlNmX1S33LdArSj0fo";
+const TOKEN = "8796146859:AAEOG-FMm-SXlmAm0ie8cbR5gxM7n18_RXA";
 const OWNER_ID = 8721643962;
 const OPENAI_KEY = process.env.OPENAI_KEY;
 
@@ -47,18 +47,28 @@ bot.onText(/\/start/, (msg) => {
 
 // ===== MENU =====
 function menu(chatId) {
-    bot.sendMessage(chatId, "🚀 *GitHub Manager*", {
+    bot.sendMessage(chatId, "🚀 *GitHub Manager + AI*", {
         parse_mode: "Markdown",
         reply_markup: {
             inline_keyboard: [
                 [{ text: "🔑 Login", callback_data: "login" }],
                 [{ text: "📁 My Repos", callback_data: "repos" }],
                 [{ text: "➕ Create Repo", callback_data: "create_repo" }],
+                [{ text: "🤖 HELP TO AI", callback_data: "ai_chat" }],
+                [{ text: "📊 Stats", callback_data: "stats" }],
                 [{ text: "📢 Help", callback_data: "help" }]
             ]
         }
     });
 }
+
+// ===== STATS =====
+bot.onText(/\/stats/, (msg) => {
+    if (msg.chat.id !== OWNER_ID) return;
+    bot.sendMessage(msg.chat.id,
+        `👥 Users: ${db.users.length}\n✅ Approved: ${db.approved.length}`
+    );
+});
 
 // ===== MESSAGE =====
 bot.on("message", async (msg) => {
@@ -67,18 +77,43 @@ bot.on("message", async (msg) => {
     const chatId = msg.chat.id;
     if (!db.approved.includes(chatId)) return;
 
-    // ✅ AUTO LOGIN FIX
+    // AUTO LOGIN
     if (!sessions[chatId] && db.tokens[chatId]) {
         sessions[chatId] = db.tokens[chatId];
     }
 
     let s = sessions[chatId] || {};
 
-    // ===== LOGIN =====
+    // ===== AI CHAT MODE =====
+    if (s.aiMode) {
+        try {
+            const ai = await axios.post(
+                "https://api.openai.com/v1/chat/completions",
+                {
+                    model: "gpt-4o-mini",
+                    messages: [{ role: "user", content: msg.text }]
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${OPENAI_KEY}`
+                    }
+                }
+            );
+
+            return bot.sendMessage(chatId, ai.data.choices[0].message.content);
+        } catch {
+            return bot.sendMessage(chatId, "❌ AI error");
+        }
+    }
+
+    // LOGIN
     if (!s.token) {
         try {
             const user = await axios.get("https://api.github.com/user", {
-                headers: { Authorization: `Bearer ${msg.text}` }
+                headers: {
+                    Authorization: `Bearer ${msg.text}`,
+                    "User-Agent": "bot"
+                }
             });
 
             sessions[chatId] = {
@@ -86,44 +121,28 @@ bot.on("message", async (msg) => {
                 username: user.data.login
             };
 
-            // ✅ SAVE TOKEN (FIX)
-            db.tokens[chatId] = {
-                token: msg.text,
-                username: user.data.login
-            };
+            db.tokens[chatId] = sessions[chatId];
             saveDB();
 
-            return bot.sendMessage(chatId, "✅ Logged in\nUse buttons");
+            return bot.sendMessage(chatId, "✅ Logged in");
         } catch {
             return bot.sendMessage(chatId, "❌ Invalid Token");
         }
     }
 
-    // ===== EDIT FILE =====
-    if (s.editMode) {
-        try {
-            const fileData = await axios.get(
-                `https://api.github.com/repos/${s.username}/${s.repo}/contents/${s.file}`,
-                { headers: { Authorization: `Bearer ${s.token}` } }
-            );
+    // CREATE REPO NAME
+    if (s.createStep === "name") {
+        s.repoName = msg.text;
+        s.createStep = "visibility";
 
-            await axios.put(
-                `https://api.github.com/repos/${s.username}/${s.repo}/contents/${s.file}`,
-                {
-                    message: "edit via bot",
-                    content: Buffer.from(msg.text).toString("base64"),
-                    sha: fileData.data.sha
-                },
-                { headers: { Authorization: `Bearer ${s.token}` } }
-            );
-
-            bot.sendMessage(chatId, "✅ Updated");
-        } catch {
-            bot.sendMessage(chatId, "❌ Edit failed");
-        }
-
-        s.editMode = false;
-        return;
+        return bot.sendMessage(chatId, "🔒 Select:", {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "🌐 Public", callback_data: "repo_public" }],
+                    [{ text: "🔐 Private", callback_data: "repo_private" }]
+                ]
+            }
+        });
     }
 });
 
@@ -132,7 +151,7 @@ bot.on("callback_query", async (q) => {
     const chatId = q.message.chat.id;
     const data = q.data;
 
-    // ===== APPROVE =====
+    // APPROVE
     if (data.startsWith("approve_")) {
         const id = parseInt(data.split("_")[1]);
         if (!db.approved.includes(id)) {
@@ -143,51 +162,93 @@ bot.on("callback_query", async (q) => {
         return;
     }
 
-    // ===== REJECT =====
-    if (data.startsWith("reject_")) {
-        const id = parseInt(data.split("_")[1]);
-        bot.sendMessage(id, "❌ Rejected");
-        return;
-    }
-
-    // ✅ AUTO LOGIN FIX (CALLBACK)
+    // AUTO LOGIN
     if (!sessions[chatId] && db.tokens[chatId]) {
         sessions[chatId] = db.tokens[chatId];
     }
 
     let s = sessions[chatId];
 
-    if (!s?.token) {
-        return bot.sendMessage(chatId, "🔑 Please login first");
+    if (!s?.token && data !== "ai_chat") {
+        return bot.sendMessage(chatId, "🔑 Login first");
     }
 
-    // ===== HELP =====
+    // ===== AI CHAT BUTTON =====
+    if (data === "ai_chat") {
+        sessions[chatId] = sessions[chatId] || {};
+        sessions[chatId].aiMode = true;
+
+        return bot.sendMessage(chatId,
+            "🤖 AI Chat ON\nSend anything...\n\n(Exit: /start)"
+        );
+    }
+
+    // HELP
     if (data === "help") {
         return bot.sendMessage(chatId,
 `📖 HOW TO USE
 
-1. Login → send GitHub token
-2. My Repos → select repo
-3. Click file → manage
-4. Upload → send file
+Login → send GitHub token  
+Repos → select repo  
+File → manage  
 
-AI:
-🤖 Analyze code
+🤖 AI Chat → ask anything  
 
 Admin:
-/broadcast msg
 /stats`);
     }
 
-    // ===== REPOS =====
+    // STATS BUTTON
+    if (data === "stats") {
+        if (chatId !== OWNER_ID) return;
+        return bot.sendMessage(chatId,
+            `👥 Users: ${db.users.length}\n✅ Approved: ${db.approved.length}`
+        );
+    }
+
+    // CREATE REPO
+    if (data === "create_repo") {
+        s.createStep = "name";
+        return bot.sendMessage(chatId, "📦 Send repo name:");
+    }
+
+    if (data === "repo_public" || data === "repo_private") {
+        try {
+            await axios.post(
+                "https://api.github.com/user/repos",
+                {
+                    name: s.repoName,
+                    private: data === "repo_private"
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${s.token}`,
+                        "User-Agent": "bot",
+                        Accept: "application/vnd.github+json"
+                    }
+                }
+            );
+
+            bot.sendMessage(chatId, `✅ Repo Created: ${s.repoName}`);
+        } catch (e) {
+            bot.sendMessage(chatId, "❌ Create failed");
+        }
+
+        s.createStep = null;
+    }
+
+    // REPOS
     if (data === "repos") {
         const res = await axios.get("https://api.github.com/user/repos", {
-            headers: { Authorization: `Bearer ${s.token}` }
+            headers: {
+                Authorization: `Bearer ${s.token}`,
+                "User-Agent": "bot"
+            }
         });
 
         let buttons = res.data.map(r => ([{
-            text: "📁 " + r.name,
-            callback_data: "repo_" + encodeURIComponent(r.name)
+            text: r.name,
+            callback_data: "repo_" + r.name
         }]));
 
         return bot.sendMessage(chatId, "📂 Repos:", {
@@ -195,122 +256,5 @@ Admin:
         });
     }
 
-    // ===== SELECT REPO =====
-    if (data.startsWith("repo_")) {
-        s.repo = decodeURIComponent(data.split("_")[1]);
-
-        const res = await axios.get(
-            `https://api.github.com/repos/${s.username}/${s.repo}/contents`,
-            { headers: { Authorization: `Bearer ${s.token}` } }
-        );
-
-        let buttons = res.data.map(f => ([{
-            text: "📄 " + f.name,
-            callback_data: "file_" + encodeURIComponent(f.path)
-        }]));
-
-        buttons.push([{ text: "📤 Upload File", callback_data: "upload" }]);
-
-        bot.sendMessage(chatId, "📂 Files:", {
-            reply_markup: { inline_keyboard: buttons }
-        });
-    }
-
-    // ===== FILE =====
-    if (data.startsWith("file_")) {
-        const path = decodeURIComponent(data.split("_")[1]);
-        s.file = path;
-
-        const res = await axios.get(
-            `https://api.github.com/repos/${s.username}/${s.repo}/contents/${path}`,
-            { headers: { Authorization: `Bearer ${s.token}` } }
-        );
-
-        const content = Buffer.from(res.data.content, "base64").toString();
-
-        bot.sendMessage(chatId,
-`📄 ${path}
-
-${content.slice(0, 1500)}`);
-
-        bot.sendMessage(chatId, "⚙️ Options:", {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: "✏️ Edit", callback_data: "edit" }],
-                    [{ text: "⬇️ Download", callback_data: "download" }],
-                    [{ text: "🗑 Delete", callback_data: "delete" }],
-                    [{ text: "🤖 Analyze", callback_data: "ai" }]
-                ]
-            }
-        });
-    }
-
-    // ===== UPLOAD BUTTON =====
-    if (data === "upload") {
-        s.uploadMode = true;
-        return bot.sendMessage(chatId, "📤 Send file to upload");
-    }
-
-    // ===== AI ANALYZE =====
-    if (data === "ai") {
-        try {
-            const fileData = await axios.get(
-                `https://api.github.com/repos/${s.username}/${s.repo}/contents/${s.file}`,
-                { headers: { Authorization: `Bearer ${s.token}` } }
-            );
-
-            const content = Buffer.from(fileData.data.content, "base64").toString();
-
-            const ai = await axios.post(
-                "https://api.openai.com/v1/chat/completions",
-                {
-                    model: "gpt-4o-mini",
-                    messages: [{ role: "user", content: "Analyze this code:\n" + content }]
-                },
-                {
-                    headers: {
-                        Authorization: `Bearer ${OPENAI_KEY}`
-                    }
-                }
-            );
-
-            bot.sendMessage(chatId, ai.data.choices[0].message.content);
-
-        } catch {
-            bot.sendMessage(chatId, "❌ AI failed");
-        }
-    }
-
     bot.answerCallbackQuery(q.id);
-});
-
-// ===== UPLOAD =====
-bot.on("document", async (msg) => {
-    const chatId = msg.chat.id;
-
-    if (!db.approved.includes(chatId)) return;
-
-    let s = sessions[chatId];
-    if (!s || !s.uploadMode) return;
-
-    try {
-        const link = await bot.getFileLink(msg.document.file_id);
-        const file = await axios.get(link, { responseType: "arraybuffer" });
-
-        await axios.put(
-            `https://api.github.com/repos/${s.username}/${s.repo}/contents/${msg.document.file_name}`,
-            {
-                message: "upload",
-                content: Buffer.from(file.data).toString("base64")
-            },
-            { headers: { Authorization: `Bearer ${s.token}` } }
-        );
-
-        bot.sendMessage(chatId, "✅ Uploaded");
-
-    } catch {
-        bot.sendMessage(chatId, "❌ Upload failed");
-    }
-
-    s.uploadMode = false;
 });
