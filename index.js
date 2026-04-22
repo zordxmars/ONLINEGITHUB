@@ -3,7 +3,7 @@ const axios = require("axios");
 const fs = require("fs");
 
 // ===== CONFIG =====
-const TOKEN = "8796146859:AAF75nu7CgMRjK-vmU3XX_QUCPawa0dSyTs";
+const TOKEN = "8796146859:AAGfLmvZQEVhRDVQ6clz7Xi3IeezYiXtwZs";
 const OWNER_ID = 8721643962;
 const OPENAI_KEY = process.env.OPENAI_KEY;
 
@@ -17,11 +17,13 @@ process.on("unhandledRejection", err => console.log("REJECTION:", err));
 
 // ===== DATABASE =====
 let db = { users: [] };
+
 try {
     db = JSON.parse(fs.readFileSync("database.json"));
 } catch {
     fs.writeFileSync("database.json", JSON.stringify(db, null, 2));
 }
+
 const saveDB = () => fs.writeFileSync("database.json", JSON.stringify(db, null, 2));
 
 // ===== SESSION =====
@@ -31,33 +33,28 @@ const getSession = (id) => {
     return sessions[id];
 };
 
-// ===== LOADER =====
-async function runTask(chatId, text, task) {
-    const msg = await bot.sendMessage(chatId, `⏳ ${text}...`);
-    try {
-        const res = await task();
-        await bot.editMessageText(`✅ ${text} completed`, {
-            chat_id: chatId,
-            message_id: msg.message_id
-        });
-        return res;
-    } catch (e) {
-        await bot.editMessageText(`❌ ${text} failed`, {
-            chat_id: chatId,
-            message_id: msg.message_id
-        });
-        throw e;
-    }
-}
-
 // ===== START =====
 bot.onText(/\/start/, (msg) => {
     const id = msg.chat.id;
 
-    if (!db.users.includes(id)) {
-        db.users.push(id);
+    const userData = {
+        id: id,
+        name: msg.from.first_name || "NoName",
+        username: msg.from.username || "NoUsername"
+    };
+
+    const exists = db.users.find(u => u.id === id);
+
+    if (!exists) {
+        db.users.push(userData);
         saveDB();
-        bot.sendMessage(OWNER_ID, `👤 New User: ${id}`);
+
+        bot.sendMessage(OWNER_ID,
+`👤 New User
+
+🆔 ${userData.id}
+👤 ${userData.name}
+🔗 @${userData.username}`);
     }
 
     menu(id);
@@ -70,45 +67,52 @@ function menu(id) {
             inline_keyboard: [
                 [{ text: "📁 My Repos", callback_data: "repos" }],
                 [{ text: "➕ Create Repo", callback_data: "create_repo" }],
-                [{ text: "🔍 Search Repo", callback_data: "search_repo" }],
                 [{ text: "🤖 AI Fix", callback_data: "ai" }]
             ]
         }
     });
 }
 
-// ===== UPDATE COMMAND =====
+// ===== USERS LIST =====
+bot.onText(/\/users/, (msg) => {
+    if (msg.chat.id !== OWNER_ID) return;
+
+    let list = db.users.map((u, i) =>
+`${i + 1}. ${u.name}
+🆔 ${u.id}
+👤 @${u.username}`
+    ).join("\n\n");
+
+    if (list.length > 4000) list = list.slice(0, 4000);
+
+    bot.sendMessage(msg.chat.id,
+`👥 Total Users: ${db.users.length}
+
+${list}`);
+});
+
+// ===== STATS =====
+bot.onText(/\/stats/, (msg) => {
+    if (msg.chat.id !== OWNER_ID) return;
+    bot.sendMessage(msg.chat.id, `👥 Users: ${db.users.length}`);
+});
+
+// ===== UPDATE =====
 bot.onText(/\/update (.+)/, async (msg, match) => {
     if (msg.chat.id !== OWNER_ID) return;
 
-    const text = match[1];
     let success = 0, fail = 0;
 
-    const status = await bot.sendMessage(msg.chat.id, "🚀 Sending update...");
-
-    for (let id of db.users) {
+    for (let u of db.users) {
         try {
-            await bot.sendMessage(id,
-`🚀 *BOT UPDATED*
-
-${text}
-
-🔥 Enjoy new features!`,
-            { parse_mode: "Markdown" }
-            );
+            await bot.sendMessage(u.id, `🚀 UPDATE\n\n${match[1]}`);
             success++;
         } catch {
             fail++;
         }
     }
 
-    await bot.editMessageText(
-        `📊 Done\n\n✅ ${success}\n❌ ${fail}`,
-        {
-            chat_id: msg.chat.id,
-            message_id: status.message_id
-        }
-    );
+    bot.sendMessage(msg.chat.id, `✅ ${success}\n❌ ${fail}`);
 });
 
 // ===== CALLBACK =====
@@ -120,15 +124,14 @@ bot.on("callback_query", async (q) => {
     try {
 
         if (!s.token) {
-            return bot.sendMessage(id, "🔑 Send GitHub token first");
+            return bot.sendMessage(id, "🔑 Send GitHub token");
         }
 
+        // ===== REPOS =====
         if (data === "repos") {
-            const res = await runTask(id, "Fetching repos", async () =>
-                await axios.get("https://api.github.com/user/repos", {
-                    headers: { Authorization: `Bearer ${s.token}` }
-                })
-            );
+            const res = await axios.get("https://api.github.com/user/repos", {
+                headers: { Authorization: `Bearer ${s.token}` }
+            });
 
             let btn = res.data.map(r => ([{
                 text: r.name,
@@ -140,29 +143,13 @@ bot.on("callback_query", async (q) => {
             });
         }
 
-        if (data === "create_repo") {
-            s.create = true;
-            return bot.sendMessage(id, "Send repo name");
-        }
-
-        if (data === "search_repo") {
-            s.search = true;
-            return bot.sendMessage(id, "Send repo name");
-        }
-
-        if (data === "ai") {
-            s.ai = true;
-            return bot.sendMessage(id, "Send code to fix");
-        }
-
+        // ===== SELECT REPO =====
         if (data.startsWith("repo_")) {
             s.repo = decodeURIComponent(data.split("_")[1]);
 
-            const res = await runTask(id, "Loading files", async () =>
-                await axios.get(
-                    `https://api.github.com/repos/${s.username}/${s.repo}/contents`,
-                    { headers: { Authorization: `Bearer ${s.token}` } }
-                )
+            const res = await axios.get(
+                `https://api.github.com/repos/${s.username}/${s.repo}/contents`,
+                { headers: { Authorization: `Bearer ${s.token}` } }
             );
 
             let files = res.data.map(f => ([{
@@ -170,19 +157,61 @@ bot.on("callback_query", async (q) => {
                 callback_data: "file_" + encodeURIComponent(f.path)
             }]));
 
-            files.push([{ text: "📤 Upload File", callback_data: "upload_file" }]);
+            files.push([{ text: "📤 Upload", callback_data: "upload" }]);
 
             return bot.sendMessage(id, "📂 Files:", {
                 reply_markup: { inline_keyboard: files }
             });
         }
 
-        if (data === "upload_file") {
-            s.upload = true;
-            return bot.sendMessage(id, "📤 Send file");
+        // ===== FILE =====
+        if (data.startsWith("file_")) {
+            s.file = decodeURIComponent(data.split("_")[1]);
+
+            const res = await axios.get(
+                `https://api.github.com/repos/${s.username}/${s.repo}/contents/${s.file}`,
+                { headers: { Authorization: `Bearer ${s.token}` } }
+            );
+
+            const content = Buffer.from(res.data.content, "base64").toString();
+
+            bot.sendMessage(id, content.slice(0, 1500));
+
+            return bot.sendMessage(id, "⚙️ Options:", {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "🗑 Delete", callback_data: "delete" }],
+                        [{ text: "📤 Upload", callback_data: "upload" }]
+                    ]
+                }
+            });
         }
 
-    } catch (e) {
+        // ===== DELETE =====
+        if (data === "delete") {
+            const fileData = await axios.get(
+                `https://api.github.com/repos/${s.username}/${s.repo}/contents/${s.file}`,
+                { headers: { Authorization: `Bearer ${s.token}` } }
+            );
+
+            await axios.delete(
+                `https://api.github.com/repos/${s.username}/${s.repo}/contents/${s.file}`,
+                {
+                    headers: { Authorization: `Bearer ${s.token}` },
+                    data: { message: "delete", sha: fileData.data.sha }
+                }
+            );
+
+            bot.sendMessage(id, "✅ Deleted");
+        }
+
+        // ===== UPLOAD =====
+        if (data === "upload") {
+            s.upload = true;
+            bot.sendMessage(id, "📤 Send file");
+        }
+
+    } catch {
         bot.sendMessage(id, "❌ Error");
     }
 
@@ -200,12 +229,11 @@ bot.on("message", async (msg) => {
 
     try {
 
+        // LOGIN
         if (!s.token) {
-            const user = await runTask(id, "Login", async () =>
-                await axios.get("https://api.github.com/user", {
-                    headers: { Authorization: `Bearer ${text}` }
-                })
-            );
+            const user = await axios.get("https://api.github.com/user", {
+                headers: { Authorization: `Bearer ${text}` }
+            });
 
             s.token = text;
             s.username = user.data.login;
@@ -213,51 +241,41 @@ bot.on("message", async (msg) => {
             return bot.sendMessage(id, "✅ Logged in");
         }
 
+        // CREATE REPO
         if (s.create) {
-            await runTask(id, "Creating repo", async () =>
-                await axios.post(
-                    "https://api.github.com/user/repos",
-                    { name: text },
-                    { headers: { Authorization: `Bearer ${s.token}` } }
-                )
+            await axios.post(
+                "https://api.github.com/user/repos",
+                { name: text },
+                { headers: { Authorization: `Bearer ${s.token}` } }
             );
 
             s.repo = text;
+            s.create = false;
 
-            return bot.sendMessage(id, `✅ Repo Created: ${text}`, {
+            return bot.sendMessage(id, "✅ Repo Created", {
                 reply_markup: {
                     inline_keyboard: [
-                        [{ text: "📤 Add Files", callback_data: "upload_file" }]
+                        [{ text: "📤 Add Files", callback_data: "upload" }]
                     ]
                 }
             });
         }
 
-        if (s.search) {
-            const res = await runTask(id, "Searching", async () =>
-                await axios.get(`https://api.github.com/search/repositories?q=${text}`)
-            );
-
-            bot.sendMessage(id,
-                res.data.items.slice(0, 5).map(r => r.full_name).join("\n")
-            );
-            s.search = false;
-            return;
-        }
-
+        // AI
         if (s.ai) {
-            const res = await runTask(id, "AI Fix", async () =>
-                await axios.post("https://api.openai.com/v1/chat/completions", {
+            const res = await axios.post(
+                "https://api.openai.com/v1/chat/completions",
+                {
                     model: "gpt-4o-mini",
                     messages: [{ role: "user", content: text }]
-                }, {
+                },
+                {
                     headers: { Authorization: `Bearer ${OPENAI_KEY}` }
-                })
+                }
             );
 
             bot.sendMessage(id, res.data.choices[0].message.content);
             s.ai = false;
-            return;
         }
 
     } catch {
@@ -276,15 +294,13 @@ bot.on("document", async (msg) => {
         const link = await bot.getFileLink(msg.document.file_id);
         const file = await axios.get(link, { responseType: "arraybuffer" });
 
-        await runTask(id, "Uploading", async () =>
-            await axios.put(
-                `https://api.github.com/repos/${s.username}/${s.repo}/contents/${msg.document.file_name}`,
-                {
-                    message: "upload",
-                    content: Buffer.from(file.data).toString("base64")
-                },
-                { headers: { Authorization: `Bearer ${s.token}` } }
-            )
+        await axios.put(
+            `https://api.github.com/repos/${s.username}/${s.repo}/contents/${msg.document.file_name}`,
+            {
+                message: "upload",
+                content: Buffer.from(file.data).toString("base64")
+            },
+            { headers: { Authorization: `Bearer ${s.token}` } }
         );
 
         bot.sendMessage(id, "✅ Uploaded");
