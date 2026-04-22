@@ -3,20 +3,16 @@ const axios = require("axios");
 const fs = require("fs");
 
 // ===== CONFIG =====
-const TOKEN = "8796146859:AAGfLmvZQEVhRDVQ6clz7Xi3IeezYiXtwZs";
+const TOKEN = "8796146859:AAGQ8cy3NJBGQE8zxNrtiawLmlNX26zR8FE";
 const OWNER_ID = 8721643962;
 const OPENAI_KEY = process.env.OPENAI_KEY;
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-console.log("✅ Bot Started");
-
-// ===== ERROR SAFETY =====
-process.on("uncaughtException", err => console.log("ERROR:", err));
-process.on("unhandledRejection", err => console.log("REJECTION:", err));
+console.log("✅ BOT STARTED");
 
 // ===== DATABASE =====
-let db = { users: [] };
+let db = { users: [], banned: [] };
 
 try {
     db = JSON.parse(fs.readFileSync("database.json"));
@@ -33,47 +29,60 @@ const getSession = (id) => {
     return sessions[id];
 };
 
-// ===== START =====
-bot.onText(/\/start/, (msg) => {
+// ===== SAVE USER =====
+function saveUser(msg) {
     const id = msg.chat.id;
 
-    const userData = {
-        id: id,
-        name: msg.from.first_name || "NoName",
-        username: msg.from.username || "NoUsername"
-    };
+    let user = db.users.find(u => u.id === id);
 
-    const exists = db.users.find(u => u.id === id);
+    if (!user) {
+        user = {
+            id,
+            name: msg.from.first_name || "NoName",
+            username: msg.from.username || "NoUsername",
+            lastActive: Date.now()
+        };
 
-    if (!exists) {
-        db.users.push(userData);
+        db.users.push(user);
         saveDB();
 
         bot.sendMessage(OWNER_ID,
 `👤 New User
 
-🆔 ${userData.id}
-👤 ${userData.name}
-🔗 @${userData.username}`);
+🆔 ${user.id}
+👤 ${user.name}
+🔗 @${user.username}`);
+    } else {
+        user.lastActive = Date.now();
+        saveDB();
+    }
+}
+
+// ===== START =====
+bot.onText(/\/start/, (msg) => {
+    saveUser(msg);
+
+    if (db.banned.includes(msg.chat.id)) {
+        return bot.sendMessage(msg.chat.id, "🚫 You are banned");
     }
 
-    menu(id);
+    menu(msg.chat.id);
 });
 
 // ===== MENU =====
 function menu(id) {
-    bot.sendMessage(id, "🚀 DIE GITHUB MANAGER PRO", {
+    bot.sendMessage(id, "🚀 GITHUB MANAGER PRO", {
         reply_markup: {
             inline_keyboard: [
-                [{ text: "📁 My Repos", callback_data: "repos" }],
-                [{ text: "➕ Create Repo", callback_data: "create_repo" }],
+                [{ text: "📁 Repos", callback_data: "repos" }],
+                [{ text: "➕ Create Repo", callback_data: "create" }],
                 [{ text: "🤖 AI Fix", callback_data: "ai" }]
             ]
         }
     });
 }
 
-// ===== USERS LIST =====
+// ===== USERS =====
 bot.onText(/\/users/, (msg) => {
     if (msg.chat.id !== OWNER_ID) return;
 
@@ -83,36 +92,74 @@ bot.onText(/\/users/, (msg) => {
 👤 @${u.username}`
     ).join("\n\n");
 
-    if (list.length > 4000) list = list.slice(0, 4000);
-
     bot.sendMessage(msg.chat.id,
-`👥 Total Users: ${db.users.length}
+`👥 Users: ${db.users.length}
 
-${list}`);
+${list.slice(0, 4000)}`);
 });
 
 // ===== STATS =====
 bot.onText(/\/stats/, (msg) => {
     if (msg.chat.id !== OWNER_ID) return;
-    bot.sendMessage(msg.chat.id, `👥 Users: ${db.users.length}`);
+
+    const now = Date.now();
+    const active = db.users.filter(u => now - u.lastActive < 86400000).length;
+
+    bot.sendMessage(msg.chat.id,
+`📊 STATS
+
+👥 Total: ${db.users.length}
+🟢 Active (24h): ${active}`);
 });
 
-// ===== UPDATE =====
-bot.onText(/\/update (.+)/, async (msg, match) => {
+// ===== BROADCAST =====
+bot.onText(/\/broadcast (.+)/, async (msg, match) => {
     if (msg.chat.id !== OWNER_ID) return;
 
-    let success = 0, fail = 0;
+    let ok = 0, fail = 0;
 
     for (let u of db.users) {
         try {
-            await bot.sendMessage(u.id, `🚀 UPDATE\n\n${match[1]}`);
-            success++;
+            await bot.sendMessage(u.id, `📢 ${match[1]}`);
+            ok++;
         } catch {
             fail++;
         }
     }
 
-    bot.sendMessage(msg.chat.id, `✅ ${success}\n❌ ${fail}`);
+    bot.sendMessage(msg.chat.id, `✅ ${ok} Sent\n❌ ${fail} Failed`);
+});
+
+// ===== BAN =====
+bot.onText(/\/ban (.+)/, (msg, m) => {
+    if (msg.chat.id !== OWNER_ID) return;
+
+    const id = parseInt(m[1]);
+    if (!db.banned.includes(id)) {
+        db.banned.push(id);
+        saveDB();
+    }
+
+    bot.sendMessage(msg.chat.id, `🚫 Banned: ${id}`);
+});
+
+// ===== UNBAN =====
+bot.onText(/\/unban (.+)/, (msg, m) => {
+    if (msg.chat.id !== OWNER_ID) return;
+
+    const id = parseInt(m[1]);
+    db.banned = db.banned.filter(x => x !== id);
+    saveDB();
+
+    bot.sendMessage(msg.chat.id, `✅ Unbanned: ${id}`);
+});
+
+// ===== EXPORT USERS =====
+bot.onText(/\/export/, (msg) => {
+    if (msg.chat.id !== OWNER_ID) return;
+
+    fs.writeFileSync("users_export.json", JSON.stringify(db.users, null, 2));
+    bot.sendDocument(msg.chat.id, "users_export.json");
 });
 
 // ===== CALLBACK =====
@@ -121,13 +168,16 @@ bot.on("callback_query", async (q) => {
     const data = q.data;
     const s = getSession(id);
 
+    if (db.banned.includes(id)) {
+        return bot.sendMessage(id, "🚫 Banned");
+    }
+
     try {
 
         if (!s.token) {
             return bot.sendMessage(id, "🔑 Send GitHub token");
         }
 
-        // ===== REPOS =====
         if (data === "repos") {
             const res = await axios.get("https://api.github.com/user/repos", {
                 headers: { Authorization: `Bearer ${s.token}` }
@@ -143,7 +193,6 @@ bot.on("callback_query", async (q) => {
             });
         }
 
-        // ===== SELECT REPO =====
         if (data.startsWith("repo_")) {
             s.repo = decodeURIComponent(data.split("_")[1]);
 
@@ -164,48 +213,6 @@ bot.on("callback_query", async (q) => {
             });
         }
 
-        // ===== FILE =====
-        if (data.startsWith("file_")) {
-            s.file = decodeURIComponent(data.split("_")[1]);
-
-            const res = await axios.get(
-                `https://api.github.com/repos/${s.username}/${s.repo}/contents/${s.file}`,
-                { headers: { Authorization: `Bearer ${s.token}` } }
-            );
-
-            const content = Buffer.from(res.data.content, "base64").toString();
-
-            bot.sendMessage(id, content.slice(0, 1500));
-
-            return bot.sendMessage(id, "⚙️ Options:", {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "🗑 Delete", callback_data: "delete" }],
-                        [{ text: "📤 Upload", callback_data: "upload" }]
-                    ]
-                }
-            });
-        }
-
-        // ===== DELETE =====
-        if (data === "delete") {
-            const fileData = await axios.get(
-                `https://api.github.com/repos/${s.username}/${s.repo}/contents/${s.file}`,
-                { headers: { Authorization: `Bearer ${s.token}` } }
-            );
-
-            await axios.delete(
-                `https://api.github.com/repos/${s.username}/${s.repo}/contents/${s.file}`,
-                {
-                    headers: { Authorization: `Bearer ${s.token}` },
-                    data: { message: "delete", sha: fileData.data.sha }
-                }
-            );
-
-            bot.sendMessage(id, "✅ Deleted");
-        }
-
-        // ===== UPLOAD =====
         if (data === "upload") {
             s.upload = true;
             bot.sendMessage(id, "📤 Send file");
@@ -220,16 +227,19 @@ bot.on("callback_query", async (q) => {
 
 // ===== MESSAGE =====
 bot.on("message", async (msg) => {
+    saveUser(msg);
+
     const id = msg.chat.id;
     const text = msg.text;
 
     if (!text || text.startsWith("/")) return;
 
+    if (db.banned.includes(id)) return;
+
     const s = getSession(id);
 
     try {
 
-        // LOGIN
         if (!s.token) {
             const user = await axios.get("https://api.github.com/user", {
                 headers: { Authorization: `Bearer ${text}` }
@@ -241,7 +251,6 @@ bot.on("message", async (msg) => {
             return bot.sendMessage(id, "✅ Logged in");
         }
 
-        // CREATE REPO
         if (s.create) {
             await axios.post(
                 "https://api.github.com/user/repos",
@@ -249,19 +258,10 @@ bot.on("message", async (msg) => {
                 { headers: { Authorization: `Bearer ${s.token}` } }
             );
 
-            s.repo = text;
             s.create = false;
-
-            return bot.sendMessage(id, "✅ Repo Created", {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "📤 Add Files", callback_data: "upload" }]
-                    ]
-                }
-            });
+            return bot.sendMessage(id, "✅ Repo Created");
         }
 
-        // AI
         if (s.ai) {
             const res = await axios.post(
                 "https://api.openai.com/v1/chat/completions",
